@@ -89,6 +89,74 @@ def run_forward(content, style, content_tf, style_tf, vgg, decoder, device,
 
     return output
 
+
+def initialize_parsing_model(n_classes, save_pth, device):
+    net = BiSeNet(n_classes=n_classes)
+
+    net.load_state_dict(torch.load(save_pth, map_location=torch.device("cpu")))
+
+    net.to(device)
+    net.eval()
+
+    return net
+
+
+def run_parsing_forward(net, image):
+    with torch.no_grad():
+        img = to_tensor(image)
+        img = torch.unsqueeze(img, 0)
+        img = img.to(device)
+        out = net(img)[0]
+
+    if torch.cuda.is_available():
+        parsing = out.squeeze(0).cpu().numpy().argmax(0)
+    else:
+        parsing = out.squeeze(0).numpy().argmax(0)
+
+    return parsing
+
+
+def run_inference(image, overlay, content_tf, style_tf, vgg, decoder, device,
+                  preserve_color, alpha, interpolation_weights):
+    #image = image.resize((1024, 1024), Image.BILINEAR)
+    parsing = run_parsing_forward(net=net, image=image)
+
+    image = np.array(image)
+    overlay = overlay.resize((image.shape[1], image.shape[0]))
+    overlay = np.array(overlay)
+
+    #parsing = cv2.resize(parsing, (overlay.shape[1], overlay.shape[0]), interpolation=cv2.INTER_NEAREST)
+    #image = cv2.resize(image, (overlay.shape[1], overlay.shape[0]))
+
+    hair_mask = np.where(np.isin(parsing, [16, 17, 18]), True, False)
+    skin_mask = np.where(np.isin(parsing, list(range(1, 16))), True, False)
+    mask = np.where(hair_mask[:, :, np.newaxis], image, np.zeros_like(image))
+    #cv2.imshow("Mask", mask)
+    #cv2.waitKey(0)
+
+    stylized_hair = run_forward(mask, overlay, content_tf, style_tf, vgg, decoder, device,
+                                preserve_color, alpha, interpolation_weights)
+
+    stylized_hair = cv2.resize(stylized_hair, (mask.shape[1], mask.shape[0]))
+
+    stylized_hair = np.where(parsing[:, :, np.newaxis], stylized_hair, overlay)
+
+    #cv2.imshow("Output", stylized_hair[:, :, ::-1])
+    #cv2.waitKey(0)
+
+    kernel_size = max(max(image.shape[0], image.shape[1]) // 5, 31)
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    smoothed_skin_mask = cv2.GaussianBlur(skin_mask.astype(np.float32), (kernel_size, kernel_size), sigmaX=20., sigmaY=20.)
+
+    result = smoothed_skin_mask[:, :, np.newaxis] * image + (1 - smoothed_skin_mask[:, :, np.newaxis]) * stylized_hair
+    #cv2.imwrite("result.jpg", result[:, :, ::-1])
+    #cv2.imshow("Anh", result[:, :, ::-1])
+    #cv2.waitKey(0)
+
+    return result
+
+
 def get_args():
     parser = argparse.ArgumentParser()
 
@@ -152,118 +220,18 @@ if __name__ == '__main__':
 
     n_classes = 19
 
-    part_colors = [[255, 0, 0], [255, 85, 0], [255, 170, 0],
-                   [255, 0, 85], [255, 0, 170],
-                   [0, 255, 0], [85, 255, 0], [170, 255, 0],
-                   [0, 255, 85], [0, 255, 170],
-                   [0, 0, 255], [85, 0, 255], [170, 0, 255],
-                   [0, 85, 255], [0, 170, 255],
-                   [255, 255, 0], [255, 255, 85], [255, 255, 170],
-                   [255, 0, 255], [255, 85, 255], [255, 170, 255],
-                   [0, 255, 255], [85, 255, 255], [170, 255, 255]]
-
     to_tensor = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
 
-    net = BiSeNet(n_classes=n_classes)
-
-    net.load_state_dict(torch.load(save_pth, map_location=torch.device("cpu")))
-
-    net.to(device)
-    net.eval()
+    net = initialize_parsing_model(n_classes=n_classes, save_pth=save_pth, device=device)
 
     image = Image.open(image_path)
-    #image = image.resize((1024, 1024), Image.BILINEAR)
-    with torch.no_grad():
-        img = to_tensor(image)
-        img = torch.unsqueeze(img, 0)
-        img = img.to(device)
-        out = net(img)[0]
-
-    if torch.cuda.is_available():
-        parsing = out.squeeze(0).cpu().numpy().argmax(0)
-    else:
-        parsing = out.squeeze(0).numpy().argmax(0)
-
-    image = np.array(image)
-
     overlay = Image.open(overlay_path)
-    overlay = overlay.resize((image.shape[1], image.shape[0]))
-    overlay = np.array(overlay)
 
-    #parsing = cv2.resize(parsing, (overlay.shape[1], overlay.shape[0]), interpolation=cv2.INTER_NEAREST)
-    #image = cv2.resize(image, (overlay.shape[1], overlay.shape[0]))
+    result = run_inference(image=image, overlay=overlay, content_tf=content_tf, style_tf=style_tf,
+                           vgg=vgg, decoder=decoder, device=device, preserve_color=preserve_color,
+                           alpha=alpha, interpolation_weights=interpolation_weights)
 
-    #mask = np.where(parsing, 255 * np.ones_like(parsing), np.zeros_like(parsing)).astype(np.uint8)
-    #transform_mask = cv2.erode(mask, kernel=np.ones((51, 51), dtype=np.uint8), iterations=1)
-    #cv2.imshow("Mask", mask)
-    #cv2.imshow("Transform mask", transform_mask)
-    #cv2.waitKey(0)
-    hair_mask = np.where(np.isin(parsing, [16, 17, 18]), True, False)
-    skin_mask = np.where(np.isin(parsing, list(range(1, 16))), True, False)
-    mask = np.where(hair_mask[:, :, np.newaxis], image, np.zeros_like(image))
-    cv2.imshow("Mask", mask)
-    cv2.waitKey(0)
-
-    stylized_hair = run_forward(mask, overlay, content_tf, style_tf, vgg, decoder, device,
-                                preserve_color, alpha, interpolation_weights)
-
-    stylized_hair = cv2.resize(stylized_hair, (mask.shape[1], mask.shape[0]))
-
-    #hair_mask = cv2.dilate(hair_mask.astype(np.uint8), np.ones((21, 21), dtype=np.uint8))
-    #stylized_hair = np.where(hair_mask[:, :, np.newaxis], stylized_hair, image)
-    #stylized_hair = np.where(hair_mask[:, :, np.newaxis], stylized_hair, overlay)
-    stylized_hair = np.where(parsing[:, :, np.newaxis], stylized_hair, overlay)
-
-    cv2.imshow("Output", stylized_hair[:, :, ::-1])
-    cv2.waitKey(0)
-
-    dilated_skin_mask = (cv2.dilate(skin_mask.astype(np.uint8), np.ones((21, 21), dtype=np.uint8)) * 255).astype(np.uint8)
-    dilated_skin_mask = np.where(dilated_skin_mask, True, False)
-    eroded_skin_mask = (cv2.erode(skin_mask.astype(np.uint8), np.ones((21, 21), dtype=np.uint8)) * 255).astype(np.uint8)
-    eroded_skin_mask = np.where(eroded_skin_mask, True, False)
-    res_skin_mask = np.logical_xor(eroded_skin_mask, dilated_skin_mask)
-    #res_skin_mask = res_skin_mask.astype(np.uint8) * 255
-    cv2.imshow("Skin mask", res_skin_mask.astype(np.uint8) * 255)
-    cv2.waitKey(0)
-
-    #image = np.where(res_skin_mask[:, :, np.newaxis], cv2.GaussianBlur(image, ksize=(21, 21), sigmaX=0), image)
-    kernel_size = max(max(image.shape[0], image.shape[1]) // 10 , 31)
-    if kernel_size % 2 == 0:
-        kernel_size += 1
-    print("kernel_size: {}".format(kernel_size))
-    smooted_dilated_skin_mask = cv2.GaussianBlur(skin_mask.astype(np.float32), (kernel_size, kernel_size), sigmaX=20., sigmaY=20.)
-    #smooted_dilated_skin_mask = cv2.filter2D(dilated_skin_mask.astype(np.uint8), -1, np.ones((75, 75), dtype=np.float32) / (75 * 75))
-
-    #_, cnts, _ = cv2.findContours((dilated_skin_mask.astype(np.uint8) * 255).copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    #print(np.unique(dilated_skin_mask.astype(np.uint8) * 255))
-    ## based on contour area, get the maximum contour which is the hand
-    #segmented = max(cnts, key=cv2.contourArea)
-    #print("segmented: {}".format(segmented))
-
-    #for cnt in cnts:
-    #    x, y, w, h = cv2.boundingRect(cnt)
-    #    print(x, y, w, h)
-
-    #print("cnts: {}".format(len(cnts)))
-
-    #x, y, w, h = cv2.boundingRect(cnts[0])
-    #cX = x + w // 2
-    #cY = y + h // 2
-    #print(cX, cY)
-    #center = (int(image.shape[1] / 2), int(image.shape[0] / 2))
-    #center = (cX, cY)
-
-    #result = cv2.seamlessClone(image, stylized_hair, skin_mask[:, :, np.newaxis], center, cv2.MIXED_CLONE)
-
-    #parsing = np.where(np.isin(parsing, [0, 16]), False, True)
-    #result = np.where(parsing[:, :, np.newaxis] > 0, cv2.addWeighted(image[:, :, ::-1], 0.8, overlay[:, :, ::-1], 0.2, 0), overlay[:, :, ::-1])
-    #result = np.where(parsing[:, :, np.newaxis] > 0, stylized_hair[:, :, ::-1], overlay[:, :, ::-1])
-
-    #result = np.where(dilated_skin_mask[:, :, np.newaxis], image, stylized_hair)
-    result = smooted_dilated_skin_mask[:, :, np.newaxis] * image + (1 - smooted_dilated_skin_mask[:, :, np.newaxis]) * stylized_hair
     cv2.imwrite("result.jpg", result[:, :, ::-1])
-    cv2.imshow("Anh", result[:, :, ::-1])
-    cv2.waitKey(0)
