@@ -147,7 +147,9 @@ def run_inference(image, overlay, content_tf, style_tf, vgg, decoder, device,
     kernel_size = max(max(image.shape[0], image.shape[1]) // 5, 31)
     if kernel_size % 2 == 0:
         kernel_size += 1
-    smoothed_skin_mask = cv2.GaussianBlur(skin_mask.astype(np.float32), (kernel_size, kernel_size), sigmaX=20., sigmaY=20.)
+
+    skin_mask = np.where(skin_mask, 0.6, 0.4)
+    smoothed_skin_mask = cv2.GaussianBlur(skin_mask, (kernel_size, kernel_size), sigmaX=20., sigmaY=20.)
 
     result = smoothed_skin_mask[:, :, np.newaxis] * image + (1 - smoothed_skin_mask[:, :, np.newaxis]) * stylized_hair
     #cv2.imwrite("result.jpg", result[:, :, ::-1])
